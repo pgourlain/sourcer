@@ -1,0 +1,12 @@
+{application, dbg_server,
+  [
+    {vsn, "0.1.0"}
+  , {registered,   [dbg_server_sup, dbgrpc, dbg_server]}
+  , {applications, [kernel, stdlib, jsx, getopt]}
+  , {env,          []}
+  , {mod, {dbg_server_app, []}}
+  , {contributors, ["Pierrick Gourlain"]}
+  , {licenses, ["Apache 2.0"]}
+  , {links, [{"Github", "https://github.com/erlang/sourcer"}]}
+  ]}
+.

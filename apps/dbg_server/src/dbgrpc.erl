@@ -1,7 +1,7 @@
+-module(dbgrpc).
+
 %%% TCP server listening for JSON RPC messages, handles encoding and decoding 
 %%% to Erlang terms and dispatching to processes (server and client). 
-
--module(jsonrpc).
 
 -export([
 		start_link/3,
@@ -36,8 +36,8 @@ start_link(Port, Server, Client, Options) ->
 	register(?MODULE, Pid),
 	{ok, Pid}.
 
-send_notification(Method, Params) ->
-	?MODULE ! {notify, Method, Params}.
+send_notification(EventName, Body) ->
+	?MODULE ! {notify, EventName, Body}.
 
 send_request(Id, Method, Params) ->
 	?MODULE ! {request, Id, Method, Params}.
@@ -51,14 +51,17 @@ send_reply(Id, Answer) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 start(Port, Server, Client, Options) ->
-	?TRACE("LSP: Start connection on port ~w~n", [Port]),
+	?TRACE("DBG: Start connection on port ~w~n", [Port]),
     {ok, LSock} = gen_tcp:listen(Port, [binary, {packet, 0}, {active, true}]),
+	%DO NOT REMOVE THIS LINE, it used by VSCODE to wait before return the listening port
+	%TODO: 
+	io:format(">>>start_listening on port ~w~n", [Port]),
 	case gen_tcp:accept(LSock) of
 		{ok, Socket} ->
-			?TRACE("LSP: Listening on: ~p~n", [Socket]),
+			?TRACE("DBG: Listening on: ~p~n", [Socket]),
 			loop(Socket, Server, Client, Options, <<"">>, queue:new(), []);
 		Err ->
-			?TRACE("LSP: Connection error: ~p~n", [Err]),
+			?TRACE("DBG: Connection error: ~p~n", [Err]),
 		ok
 	end.
 
@@ -73,8 +76,8 @@ loop(Socket, Server, Client, Options, Buf, Pending, Results) ->
 		{request, Id, Method} ->
 			request(Socket, Id, Method),
 			loop(Socket, Server, Client, Options, Buf, Pending, Results);
-		{reply, Id, Answer} ->
-			Results1 = [{Id, Answer} | Results],
+		{reply, Id, Method, Answer} ->
+			Results1 = [{Id, Method, Answer} | Results],
 			{NewPending, NewResults} = send_replies(Socket, Pending, Options, Results1),
 			loop(Socket, Server, Client, Options, Buf, NewPending, NewResults);
 		{tcp, Socket, Data} ->
@@ -83,13 +86,14 @@ loop(Socket, Server, Client, Options, Buf, Pending, Results) ->
 			NewPending = process_messages(Msgs, Pending, Server, Client),
 			loop(Socket, Server, Client, Options, Buf3, NewPending, Results);
 		{tcp_error, Socket, _Error} ->
-			?TRACE("LSP: TCP error, exiting: ~p~n", [_Error]),
+			?TRACE("DBG: TCP error, exiting: ~p~n", [_Error]),
 			ok;
 		{tcp_closed, Socket} ->
-			?TRACE("LSP: closing connection~n", []),
+			?TRACE("DBG: closing connection~n", []),
+
 			ok;
 		_Other ->
-			?TRACE("LSP: unknown message: ~p~n", [_Other]),
+			?TRACE("DBG: unknown message: ~p~n", [_Other]),
 			loop(Socket, Server, Client, Options, Buf, Pending, Results)
 	end.
 
@@ -124,10 +128,11 @@ try_decode_1(Buf, N) ->
 process_messages(Msgs, Pending, Server, Client) ->
 	Fun = fun(Msg, Acc) ->
 		M = parse(Msg),
+        io:format("Parsed Message ~p", [M]),
 		spawn(fun() -> dispatch(M, Server, Client) end),
-		case maps:is_key(id, M) of
+		case maps:is_key(seq, M) of
 			true ->
-				#{id:=Id} = M,
+				#{seq:=Id} = M,
 				queue:in(Id, Acc);
 			false ->
 				Acc
@@ -139,54 +144,70 @@ parse(Data) ->
 	Req = decode(jsx:decode(Data, [return_maps])),
 	Req.
 
-dispatch(#{jsonrpc := <<"2.0">>,
-				    id := Id,
-				    result := Result
-				}, _Server, Client) ->
-	?DEBUG("<# RECV: REPLY ~p: ~tp~n", [Id, Result]),
-	Client ! {'$reply', Id, Result};
-dispatch(#{jsonrpc := <<"2.0">>,
-				    id := Id,
-				    error := Error
-				}, _Server, Client) ->
-	ErrCode = error_code_dec(Error),
-	?DEBUG("<# RECV: REPLY ~p: ~tp~n", [Id, ErrCode]),
-	Client ! {'$reply', Id, ErrCode};
-dispatch(#{jsonrpc := <<"2.0">>,
-				    id := Id,
-				    method := Method0,
-				    params := Params
-				}, Server, _Client) ->
-	Method = binary_to_atom(Method0, unicode),
-	?DEBUG("<# RECV: REQUEST ~p: ~tp ~tp~n", [Id, Method, Params]),
-	gen_server:call(Server, {Method, Id, Params});
-dispatch(#{jsonrpc := <<"2.0">>,
-				    id := Id,
-				    method := Method0
-				}, Server, _Client) ->
-	Method = binary_to_atom(Method0, unicode),
-	?DEBUG("<# RECV: REQUEST ~p: ~tp~n", [Id, Method]),
-	gen_server:call(Server, {Method, Id, none});
-dispatch(#{jsonrpc := <<"2.0">>,
-				    method := Method0,
-				    params := Params
-				}, Server, _Client) ->
-	Method = binary_to_atom(Method0, unicode),
-	?DEBUG("<# RECV: NOTIFICATION ~tp ~tp~n", [Method, Params]),
-	gen_server:cast(Server, {Method, Params});
-dispatch(#{jsonrpc := <<"2.0">>,
-				    method := Method0
-				}, Server, _Client) ->
-	Method = binary_to_atom(Method0, unicode),
-	?DEBUG("<# RECV: NOTIFICATION ~tp~n", [Method]),
-	gen_server:cast(Server, {Method, none}).
+%dispatch(#{jsonrpc := <<"2.0">>,
+%				    id := Id,
+%				    result := Result
+%				}, _Server, Client) ->
+%	?DEBUG("<# RECV: REPLY ~p: ~tp~n", [Id, Result]),
+%	Client ! {'$reply', Id, Result};
+%dispatch(#{jsonrpc := <<"2.0">>,
+%				    id := Id,
+%				    error := Error
+%				}, _Server, Client) ->
+%	ErrCode = error_code_dec(Error),
+%	?DEBUG("<# RECV: REPLY ~p: ~tp~n", [Id, ErrCode]),
+%	Client ! {'$reply', Id, ErrCode};
+%dispatch(#{jsonrpc := <<"2.0">>,
+%				    id := Id,
+%				    method := Method0,
+%				    params := Params
+%				}, Server, _Client) ->
+%	Method = binary_to_atom(Method0, unicode),
+%	?DEBUG("<# RECV: REQUEST ~p: ~tp ~tp~n", [Id, Method, Params]),
+%	gen_server:call(Server, {Method, Id, Params});
+%dispatch(#{jsonrpc := <<"2.0">>,
+%				    id := Id,
+%				    method := Method0
+%				}, Server, _Client) ->
+%	Method = binary_to_atom(Method0, unicode),
+%	?DEBUG("<# RECV: REQUEST ~p: ~tp~n", [Id, Method]),
+%	gen_server:call(Server, {Method, Id, none});
+%dispatch(#{jsonrpc := <<"2.0">>,
+%				    method := Method0,
+%				    params := Params
+%				}, Server, _Client) ->
+%	Method = binary_to_atom(Method0, unicode),
+%	?DEBUG("<# RECV: NOTIFICATION ~tp ~tp~n", [Method, Params]),
+%	gen_server:cast(Server, {Method, Params});
+%dispatch(#{jsonrpc := <<"2.0">>,
+%				    method := Method0
+%				}, Server, _Client) ->
+%	Method = binary_to_atom(Method0, unicode),
+%	?DEBUG("<# RECV: NOTIFICATION ~tp~n", [Method]),
+%	gen_server:cast(Server, {Method, none});
 
-notify(Socket, Method, Params) ->
-	?DEBUG("#> SEND: NOTIFY ~tp ~tp~n", [Method, Params]),
-	Ans = #{jsonrpc => <<"2.0">>,
-			method => Method,
-			params => Params
+dispatch(#{arguments := Args, 
+			command := Command, seq := Sequence,
+			type := _RequestType} = Message, Server, _Client) ->
+	%?DEBUG("<# RECV: MESSAGE ~tp~n", [Message]),
+    Method = binary_to_atom(Command, unicode),
+	gen_server:call(Server, {Method, Sequence, Args});
+
+dispatch(#{command := Command, seq := Sequence,
+			type := _RequestType} = Message, Server, _Client) ->
+	%?DEBUG("<# RECV: MESSAGE ~tp~n", [Message]),
+    Method = binary_to_atom(Command, unicode),
+	gen_server:call(Server, {Method, Sequence, undefined}).
+
+	
+
+notify(Socket, EventName, Body) ->
+	Ans = #{
+            type => <<"event">>,
+			event => EventName,
+			body => Body
 		},
+	?DEBUG("#> SEND: NOTIFY ~tp ~n", [Ans]),
 	send_tcp(Socket, Ans).
 
 request(Socket, Id, Method, Params) ->
@@ -206,7 +227,7 @@ request(Socket, Id, Method) ->
 		},
 	send_tcp(Socket, Ans).
 
-reply(Socket, Id, {error, Code0, Msg})  ->
+reply(Socket, Id, _Method, {error, Code0, Msg})  ->
 	Code = error_code_enc(Code0),
 	?DEBUG("#> SEND: REPLY ~p: ~tp~n", [Id, Msg]),
 	Ans = #{jsonrpc => <<"2.0">>,
@@ -217,14 +238,17 @@ reply(Socket, Id, {error, Code0, Msg})  ->
 					}
 		},
 	send_tcp(Socket, Ans);
-reply(Socket, Id, Msg) when is_map(Msg); is_list(Msg); Msg==null ->
-	?DEBUG("#> SEND: REPLY ~p: ~tp~n", [Id, Msg]),
-	Ans = #{jsonrpc => <<"2.0">>,
-			id => Id,
-			result => Msg
+reply(Socket, Id, Method, Msg) when is_map(Msg); is_list(Msg); Msg==null ->	
+    Cmd = list_to_binary(atom_to_list(Method)),
+	Ans = #{ type => <<"response">>,
+            request_seq => Id,
+            success => true,
+            command => Cmd,
+			body => Msg
 		},
+    ?DEBUG("#> SEND: REPLY ~p: ~tp~n", [Id, Ans]),
 	send_tcp(Socket, Ans);
-reply(_Socket, Id, Msg) ->
+reply(_Socket, Id, _Method, Msg) ->
 	?TRACE("Erroneous reply: ~tp~n",[{Id, Msg}]),
 	ok.
 
@@ -233,7 +257,7 @@ send_replies(Socket, Pending, Options, Results) ->
 		true ->
 			send_ordered_replies(Socket, Pending, Results);
 		false ->
-			[reply(Socket, Id, Answer) || {Id, Answer} <- Results]
+			[reply(Socket, Id, Method, Answer) || {Id, Method, Answer} <- Results]
 	end.
 
 send_ordered_replies(Socket, Pending, Results) ->
@@ -244,8 +268,8 @@ send_ordered_replies(Socket, Pending, Results) ->
 			case lists:keyfind(Id, 1, Results) of
 				false ->
 					{Pending, Results};
-				{Id, Answer} ->
-					reply(Socket, Id, Answer), 
+				{Id, Method, Answer} ->
+					reply(Socket, Id, Method, Answer), 
 					{_, Rest} = queue:out(Pending),
 					send_ordered_replies(Socket, Rest, lists:keydelete(Id, 1, Results)) 
 			end

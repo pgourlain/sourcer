@@ -1,8 +1,4 @@
-%%% @author vlad
-%%% @doc Handle LSP messages by dispatching (asynchronously)
-%%% to a provided handler module.
-
--module(lsp_server).
+-module(dbg_server).
 
 -behaviour(gen_server).
 
@@ -22,14 +18,10 @@ start_link(Mod) ->
 -record(state, {
 				stopped = true,
 				pending_requests = [],
-				user_module = sourcer,
-				user_state
-				%% TODO: user_state can be big, do we want to keep send it back and forth
-				%% for each request?? If we want async workers, it can't be completely
-				%% avoided, I think
-				%% -->> workers should get only parts of the state that are relevant for
-				%% the operation, for example only the current document data
-				%% (unless it's a worskpace operation)
+				user_module = erlang_dbg_implementor,
+                % list of threads (erlang processes)
+                % implementor state
+				user_state 
 			   }).
 
 -define(DEBUG, true).
@@ -50,18 +42,30 @@ handle_call({'initialize', Id, Params},
 		_From, State=#state{user_module = Mod}) ->
 	?DEBUG("REQ ~p: ~p:: ~p~n", [Id, 'initialize', Params]),
 	{Reply, NewUserState} = Mod:initialize(Params),
-	reply(Id, Reply),
+	reply(Id, 'initialize', Reply),
 	{reply, error, State#state{user_state=NewUserState, stopped=false}};
-handle_call({Method, Id, Params},
+handle_call({Method, Id, _Params},
 		_From, State=#state{user_module = Mod, stopped=true}) ->
-	reply(Id, Mod:error(server_not_initialized, "Server was stopped")),
+	reply(Id, Method, Mod:error(server_not_initialized, "Server was stopped")),
 	{reply, error, State};
+handle_call({'launch', Id, Params},
+		_From, State=#state{user_module = Mod}) ->
+	{Reply, NewUserState} = Mod:launch(State#state.user_state, Params),
+	reply(Id, 'launch', Reply),
+	{reply, error, State#state{user_state=NewUserState, stopped=false}};
+
+handle_call({'decode_debugger_message', M}, _From, State=#state{user_module = Mod, user_state=UserState}) ->
+    ?DEBUG("INT: ~p: ~n", [M]),
+    NewUserState = Mod:decode_debugger_message(M, UserState),
+    {reply, ok, State#state{user_state=NewUserState}};
+
 handle_call({Method, Id, Params},
-		_From, State=#state{user_module = Mod, pending_requests=Reqs}) ->
+		_From, State=#state{user_module = _Mod, pending_requests=Reqs}) ->
 	?DEBUG("REQ ~p: ~p:: ~p~n", [Id, Method, Params]),
 	Pid = start_worker(Id, Method, Params, State),
 	NewReqs = [{Id, Pid}|Reqs],
 	{noreply, State#state{pending_requests=NewReqs}};
+
 handle_call(Request, _From, State) ->
 	?DEBUG("Unrecognized request: ~p~n", [Request]),
 	Reply = {error, {unknown, Request}},
@@ -108,9 +112,9 @@ terminate(_Reason, _State) ->
 code_change(_OldVsn, State, _Extra) ->
 	{ok, State}.
 
-reply(Id, Answer) ->
-	?DEBUG("ANS ~p:: ~p~n", [Id, Answer]),
-	jsonrpc ! {reply, Id, Answer},
+reply(Id, Method, Answer) ->
+	%?DEBUG("ANS ~p:: ~p~n", [Id, Answer]),
+	dbgrpc ! {reply, Id, Method, Answer},
 	ok.
 
 cancel_worker(Id, #state{pending_requests=Reqs}=State) ->
@@ -141,10 +145,9 @@ start_worker(Id, Method, Params, State) ->
 				end
 		end,
 	Replier = fun({_, nothing}) ->
-				reply(Id, Mod:default_answer(Method));
+				reply(Id, Method, Mod:default_answer(Method));
 			({_, Answer}) ->
-				reply(Id, Answer)
+				reply(Id, Method, Answer)
 		end,
 	{ok, Pid} = cancellable_worker:start(Id, Work, Replier),
 	Pid.
-

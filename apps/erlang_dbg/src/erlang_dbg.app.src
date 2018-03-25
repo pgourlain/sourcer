@@ -1,0 +1,16 @@
+{application, erlang_dbg,
+    [
+    {description, "Debugger server for VSCode"}
+    , {vsn, "0.1.0"}
+    , {registered, []}
+    , {mod, { erlang_dbg_app, []}}
+    , {applications,  [
+          kernel, stdlib, dbg_server
+    ]}
+    , {env,[]}
+    , {modules, []}
+
+    ,{contributors, ["Pierrick Gourlain"]}
+    ,{licenses, ["Apache 2.0"]}
+    ,{links, [{"Github", "https://github.com/erlang/sourcer"}]}
+]}.

@@ -10,7 +10,7 @@
         'workspace/symbol'/3,
         'workspace/executeCommand'/3,
 
-        'textDocument/didChange'/3,
+        'textDocument/didChange'/2,
         'textDocument/didOpen'/2,
         'textDocument/didClose'/2,
         'textDocument/willSave'/2,
@@ -138,7 +138,7 @@
     State#state{open_files=NewOpen}.
 
 %% TODO: this is for full sync, handle incremental changes too
-'textDocument/didChange'(State, #{textDocument:=Item}, Changes) ->
+'textDocument/didChange'(State, #{textDocument:=Item, contentChanges:=Changes}) ->
     ?DEBUG("CHANGE::~p -- ~p~n", [Item, Changes]),
     #{uri:=URI} = Item,
     %% TODO: start parsing & processing
